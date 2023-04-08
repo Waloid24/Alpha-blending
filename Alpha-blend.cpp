@@ -1,6 +1,7 @@
 #include "Alpha-blend.hpp"
 
 using namespace sf;
+const int NUM_ITERS = 100;
 
 static uint32_t mixColors (uint32_t FColorComp, uint32_t BColorComp, uint32_t FAlpha);
 static void changeArrayNoAvx (uint32_t FWidth, uint32_t FHeight, const uint32_t * foreGr,
@@ -26,12 +27,21 @@ void blend (Image * background, Image * foreground, Vector2i FPosition)
 
     uint32_t * dest = (uint32_t *) backGr;
 
-    #ifdef AVX
-        changeArrayAvx   (FWidth, FHeight, foreGr, BWidth, BHeight, backGr, dest, X, Y);
-    #else
-        changeArrayNoAvx (FWidth, FHeight, foreGr, BWidth, BHeight, backGr, dest, X, Y);
+    // double secs = 0;
+
+    // for (int i = 0; i < NUM_ITERS; i++) // measurements
+    // {
+    //     clock_t start = clock();
+        #ifdef AVX
+            changeArrayAvx   (FWidth, FHeight, foreGr, BWidth, BHeight, backGr, dest, X, Y);
+        #else
+            changeArrayNoAvx (FWidth, FHeight, foreGr, BWidth, BHeight, backGr, dest, X, Y);
+        #endif
+    //     clock_t end = clock();
         
-    #endif
+    //     secs += (double)(end-start)/CLOCKS_PER_SEC; // measurements
+    // }
+    // printf ("The time: %f seconds\n", secs);
 }
 
 static uint32_t mixColors (uint32_t FColorComp, uint32_t BColorComp, uint32_t FAlpha)
