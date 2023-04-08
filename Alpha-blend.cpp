@@ -2,38 +2,13 @@
 
 using namespace sf;
 
-void blend (Image * background, Image * foreground, Vector2i FPosition);
 static uint32_t mixColors (uint32_t FColorComp, uint32_t BColorComp, uint32_t FAlpha);
 static void changeArrayNoAvx (uint32_t FWidth, uint32_t FHeight, const uint32_t * foreGr,
                               uint32_t BWidth, uint32_t BHeight, const uint32_t * backGr,
                               uint32_t * dest, uint32_t X, uint32_t Y);
-                              
-int main (int argc, char* argv[])
-{
-    MY_ASSERT (argc != 5, "You need to enter 5 arguments: executable file, the name of the file with background"
-                "(first) and the name of the file with foreground (second), the x-axis coordinate of foreground picture" 
-                " and the y-axis coordinate of foreground picture");
-
-    Image background;
-    MY_ASSERT (background.loadFromFile (argv[1]) != true, "Unable to open file with background");
-
-    Image foreground;
-    MY_ASSERT (foreground.loadFromFile (argv[2]) != true, "Unable to open file with foreground");
-
-    uint32_t xPos = strtol (argv[3], nullptr, 10);
-    MY_ASSERT (errno == ERANGE, "The x-axis coordinate must have an unsigned integer value within the unsigned int");
-
-    uint32_t yPos = strtol (argv[4], nullptr, 10);
-    MY_ASSERT (errno == ERANGE, "The y-axis coordinate must have an unsigned integer value within the unsigned int");
-
-    Vector2i FPosition (xPos, yPos);
-
-    blend (&background, &foreground, FPosition);
-
-    MY_ASSERT (!background.saveToFile("result.png"), "It is impossible to save the final image");
-
-    return 0;
-}
+static void changeArrayAvx (uint32_t FWidth, uint32_t FHeight, const uint32_t * foreGr,
+                            uint32_t BWidth, uint32_t BHeight, const uint32_t * backGr,
+                            uint32_t * dest, uint32_t X, uint32_t Y);
 
 void blend (Image * background, Image * foreground, Vector2i FPosition)
 {
@@ -46,15 +21,13 @@ void blend (Image * background, Image * foreground, Vector2i FPosition)
     uint32_t BWidth  = background->getSize().x;
     uint32_t BHeight = background->getSize().y;
 
-    printf ("BWidth = %u, BHeight = %u\n", BWidth, BHeight);
-
     const uint32_t * backGr = (const uint32_t *) background->getPixelsPtr();
     const uint32_t * foreGr = (const uint32_t *) foreground->getPixelsPtr();
 
     uint32_t * dest = (uint32_t *) backGr;
 
     #ifdef AVX
-        changeArrayAvx (FWidth, FHeight, foreGr, BWidth, BHeight, backGr, dest, X, Y);
+        changeArrayAvx   (FWidth, FHeight, foreGr, BWidth, BHeight, backGr, dest, X, Y);
     #else
         changeArrayNoAvx (FWidth, FHeight, foreGr, BWidth, BHeight, backGr, dest, X, Y);
         
@@ -70,6 +43,9 @@ static void changeArrayNoAvx (uint32_t FWidth, uint32_t FHeight, const uint32_t 
                               uint32_t BWidth, uint32_t BHeight, const uint32_t * backGr,
                               uint32_t * dest, uint32_t X, uint32_t Y)
 {
+    MY_ASSERT (foreGr == nullptr, "It is not impossible to access the array of pixels of the foreground");
+    MY_ASSERT (backGr == nullptr, "It is not impossible to access the array of pixels of the background");
+
     for (uint32_t y = 0; y < FHeight; y++)
     {
         for (uint32_t x = 0; x < FWidth; x++)
@@ -92,6 +68,57 @@ static void changeArrayNoAvx (uint32_t FWidth, uint32_t FHeight, const uint32_t 
                 result += mixColors (FColorComp, BColorComp, FAlpha) << (8*i);
             }
             dest[x + X + (y+Y)*BWidth] = result;
+        }
+    }
+}
+
+static void changeArrayAvx (uint32_t FWidth, uint32_t FHeight, const uint32_t * foreGr,
+                            uint32_t BWidth, uint32_t BHeight, const uint32_t * backGr,
+                            uint32_t * dest, uint32_t X, uint32_t Y)
+{
+    MY_ASSERT (foreGr == nullptr, "It is not impossible to access the array of pixels of the foreground");
+    MY_ASSERT (backGr == nullptr, "It is not impossible to access the array of pixels of the background");
+
+    const unsigned int I = 0xFFFFFFFF;
+    const unsigned char Z = 0xFF;
+    
+    __m256i _0 = _mm256_set1_epi32 (0);
+    const __m256i _I = _mm256_set1_epi16 (0xff);
+
+    for (unsigned int y = 0; y < FHeight; y++)
+    {
+        for (unsigned int x = 0; x < FWidth; x += 4)
+        {
+            __m128i FPixel = _mm_load_si128 ((__m128i *) &(foreGr[(y*FWidth + x)]));
+            __m128i BPixel = _mm_load_si128 ((__m128i *) &(backGr[(y+Y)*BWidth + x+X]));
+
+            __m256i fr     = _mm256_cvtepu8_epi16 (FPixel);
+            __m256i bk     = _mm256_cvtepu8_epi16 (BPixel);
+
+            __m256i maskA  = _mm256_set_epi8 (
+                                Z, 0x0e, Z, 0x0e, Z, 0x0e, Z, 0x0e,
+                                Z, 0x06, Z, 0x06, Z, 0x06, Z, 0x06,
+                                Z, 0x0e, Z, 0x0e, Z, 0x0e, Z, 0x0e,
+                                Z, 0x06, Z, 0x06, Z, 0x06, Z, 0x06);
+
+            __m256i a = _mm256_shuffle_epi8 (fr, maskA);
+
+            fr = _mm256_mullo_epi16 (fr, a);
+            bk = _mm256_mullo_epi16 (bk, _mm256_sub_epi16 (_I, a));
+
+            __m256i sum = _mm256_add_epi16 (fr, bk);
+
+            const __m256i moveSum = _mm256_set_epi8 (
+                                0x0f, 0x0d, 0x0b, 0x09, 0x07, 0x05, 0x03, 0x01,
+                                Z,   Z,   Z,   Z,   Z,   Z,   Z,   Z,
+                                Z,   Z,   Z,   Z,   Z,   Z,   Z,   Z,
+                                0x0f, 0x0d, 0x0b, 0x09, 0x07, 0x05, 0x03, 0x01);
+
+            sum = _mm256_shuffle_epi8 (sum, moveSum);
+
+            __m128i color = _mm_add_epi64(_mm256_extracti128_si256(sum, 1), _mm256_castsi256_si128(sum));
+
+            _mm_store_si128 ((__m128i *) &(backGr[(y+Y)*BWidth + x+X]), color);
         }
     }
 }
